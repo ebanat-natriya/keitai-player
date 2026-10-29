@@ -1,0 +1,375 @@
+name: Build Keitai APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Generate Project Structure & Code
+        run: |
+          mkdir -p app/src/main/java/com/example/keitaiplayer
+          mkdir -p app/src/main/res/layout
+
+          # 1. settings.gradle
+          cat << 'EOF' > settings.gradle
+          rootProject.name = "KeitaiPlayer"
+          include ':app'
+          EOF
+
+          # 2. root build.gradle
+          cat << 'EOF' > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.0.2'
+              }
+          }
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+
+          # 3. app/build.gradle
+          cat << 'EOF' > app/build.gradle
+          apply plugin: 'com.android.application'
+          android {
+              namespace 'com.example.keitaiplayer'
+              compileSdk 33
+              defaultConfig {
+                  applicationId "com.example.keitaiplayer"
+                  minSdk 22
+                  targetSdk 22
+                  versionCode 1
+                  versionName "1.0"
+              }
+          }
+          EOF
+
+          # 4. AndroidManifest.xml
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <application
+                  android:allowBackup="true"
+                  android:label="Keitai Player"
+                  android:icon="@android:drawable/ic_media_play"
+                  android:theme="@android:style/Theme.Black.NoTitleBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # 5. activity_main.xml
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:background="#000000">
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:background="#1A1A1A"
+                  android:padding="8dp">
+                  <TextView
+                      android:id="@+id/tvNowPlaying"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="Остановлено"
+                      android:textColor="#00FF00"
+                      android:textSize="16sp"
+                      android:textStyle="bold"
+                      android:singleLine="true"
+                      android:ellipsize="marquee"
+                      android:marqueeRepeatLimit="marquee_forever"
+                      android:focusable="false" />
+                  <TextView
+                      android:id="@+id/tvTime"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="00:00 / 00:00"
+                      android:textColor="#CCCCCC"
+                      android:textSize="14sp"
+                      android:layout_marginTop="4dp"
+                      android:focusable="false" />
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="[1]Пред [5]Пауза [3]След [◀/▶]Перемотка"
+                      android:textColor="#888888"
+                      android:textSize="11sp"
+                      android:layout_marginTop="4dp"
+                      android:focusable="false"/>
+              </LinearLayout>
+              <View
+                  android:layout_width="match_parent"
+                  android:layout_height="1dp"
+                  android:background="#333333" />
+              <ListView
+                  android:id="@+id/listViewTracks"
+                  android:layout_width="match_parent"
+                  android:layout_height="0dp"
+                  android:layout_weight="1"
+                  android:choiceMode="singleChoice"
+                  android:listSelector="#005500"
+                  android:divider="#222222"
+                  android:dividerHeight="1dp"
+                  android:focusable="true"
+                  android:focusableInTouchMode="true">
+                  <requestFocus />
+              </ListView>
+          </LinearLayout>
+          EOF
+
+          # 6. MainActivity.java
+          cat << 'EOF' > app/src/main/java/com/example/keitaiplayer/MainActivity.java
+          package com.example.keitaiplayer;
+          import android.app.Activity;
+          import android.content.ContentResolver;
+          import android.content.Context;
+          import android.database.Cursor;
+          import android.media.AudioManager;
+          import android.media.MediaPlayer;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.PowerManager;
+          import android.provider.MediaStore;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.AdapterView;
+          import android.widget.ArrayAdapter;
+          import android.widget.ListView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import java.io.IOException;
+          import java.util.ArrayList;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+              private ListView listView;
+              private TextView tvNowPlaying, tvTime;
+              private MediaPlayer mediaPlayer;
+              private AudioManager audioManager;
+              private ArrayList<Track> trackList = new ArrayList<>();
+              private int currentTrackIndex = -1;
+              private Handler handler = new Handler();
+
+              private static class Track {
+                  String title, artist, path;
+                  Track(String title, String artist, String path) {
+                      this.title = title; this.artist = artist; this.path = path;
+                  }
+                  @Override
+                  public String toString() { return artist + " - " + title; }
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+                  listView = findViewById(R.id.listViewTracks);
+                  tvNowPlaying = findViewById(R.id.tvNowPlaying);
+                  tvNowPlaying.setSelected(true);
+                  tvTime = findViewById(R.id.tvTime);
+                  audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                  initMediaPlayer();
+                  loadTracks();
+                  setupListView();
+              }
+
+              private void initMediaPlayer() {
+                  mediaPlayer = new MediaPlayer();
+                  mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+                  mediaPlayer.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+                  mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                      @Override
+                      public void onCompletion(MediaPlayer mp) { playNext(); }
+                  });
+              }
+
+              private void loadTracks() {
+                  ContentResolver contentResolver = getContentResolver();
+                  Uri songUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+                  String selection = MediaStore.Audio.Media.IS_MUSIC + "!= 0";
+                  String sortOrder = MediaStore.Audio.Media.TITLE + " ASC";
+                  Cursor songCursor = contentResolver.query(songUri, null, selection, null, sortOrder);
+                  if (songCursor != null && songCursor.moveToFirst()) {
+                      int titleIndex = songCursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
+                      int artistIndex = songCursor.getColumnIndex(MediaStore.Audio.Media.ARTIST);
+                      int pathIndex = songCursor.getColumnIndex(MediaStore.Audio.Media.DATA);
+                      do {
+                          trackList.add(new Track(songCursor.getString(titleIndex), songCursor.getString(artistIndex), songCursor.getString(pathIndex)));
+                      } while (songCursor.moveToNext());
+                      songCursor.close();
+                  }
+              }
+
+              private void setupListView() {
+                  if (trackList.isEmpty()) {
+                      Toast.makeText(this, "Музыка не найдена!", Toast.LENGTH_LONG).show();
+                      return;
+                  }
+                  ArrayAdapter<Track> adapter = new ArrayAdapter<Track>(this, android.R.layout.simple_list_item_1, trackList) {
+                      @Override
+                      public View getView(int position, View convertView, ViewGroup parent) {
+                          View view = super.getView(position, convertView, parent);
+                          TextView text = view.findViewById(android.R.id.text1);
+                          text.setTextColor(0xFFFFFFFF);
+                          text.setTextSize(14);
+                          text.setSingleLine(true);
+                          return view;
+                      }
+                  };
+                  listView.setAdapter(adapter);
+                  listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+                      @Override
+                      public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                          if (currentTrackIndex == position) togglePlayPause();
+                          else playTrack(position);
+                      }
+                  });
+              }
+
+              private void playTrack(int index) {
+                  if (trackList.isEmpty() || index < 0 || index >= trackList.size()) return;
+                  currentTrackIndex = index;
+                  Track track = trackList.get(currentTrackIndex);
+                  try {
+                      mediaPlayer.reset();
+                      mediaPlayer.setDataSource(track.path);
+                      mediaPlayer.prepare();
+                      mediaPlayer.start();
+                      tvNowPlaying.setText("▶ " + track.toString());
+                      listView.setSelection(currentTrackIndex);
+                      updateTimeRunnable.run();
+                  } catch (IOException e) {
+                      Toast.makeText(this, "Ошибка файла", Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              private void togglePlayPause() {
+                  if (currentTrackIndex == -1 && !trackList.isEmpty()) { playTrack(0); return; }
+                  if (mediaPlayer.isPlaying()) {
+                      mediaPlayer.pause();
+                      tvNowPlaying.setText("⏸ " + trackList.get(currentTrackIndex).toString());
+                  } else {
+                      mediaPlayer.start();
+                      tvNowPlaying.setText("▶ " + trackList.get(currentTrackIndex).toString());
+                      updateTimeRunnable.run();
+                  }
+              }
+
+              private void playNext() {
+                  if (trackList.isEmpty()) return;
+                  playTrack((currentTrackIndex + 1) % trackList.size());
+              }
+
+              private void playPrevious() {
+                  if (trackList.isEmpty()) return;
+                  playTrack((currentTrackIndex - 1 < 0) ? trackList.size() - 1 : currentTrackIndex - 1);
+              }
+
+              private void seek(int milliseconds) {
+                  if (mediaPlayer.isPlaying() || currentTrackIndex != -1) {
+                      int newPos = Math.max(0, Math.min(mediaPlayer.getCurrentPosition() + milliseconds, mediaPlayer.getDuration()));
+                      mediaPlayer.seekTo(newPos);
+                      updateUI();
+                  }
+              }
+
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  switch (keyCode) {
+                      case KeyEvent.KEYCODE_DPAD_LEFT: seek(-10000); return true;
+                      case KeyEvent.KEYCODE_DPAD_RIGHT: seek(10000); return true;
+                      case KeyEvent.KEYCODE_1: playPrevious(); return true;
+                      case KeyEvent.KEYCODE_3: playNext(); return true;
+                      case KeyEvent.KEYCODE_5: togglePlayPause(); return true;
+                      case KeyEvent.KEYCODE_2:
+                          audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
+                          return true;
+                      case KeyEvent.KEYCODE_8:
+                          audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+                          return true;
+                      case KeyEvent.KEYCODE_BACK:
+                          if (mediaPlayer != null && mediaPlayer.isPlaying()) { moveTaskToBack(true); return true; }
+                          break;
+                  }
+                  return super.onKeyDown(keyCode, event);
+              }
+
+              private Runnable updateTimeRunnable = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                          updateUI();
+                          handler.postDelayed(this, 1000);
+                      }
+                  }
+              };
+
+              private void updateUI() {
+                  tvTime.setText(formatTime(mediaPlayer.getCurrentPosition()) + " / " + formatTime(mediaPlayer.getDuration()));
+              }
+
+              private String formatTime(int millis) {
+                  return String.format(Locale.getDefault(), "%02d:%02d", (millis / (1000 * 60)) % 60, (millis / 1000) % 60);
+              }
+
+              @Override
+              protected void onDestroy() {
+                  super.onDestroy();
+                  handler.removeCallbacks(updateTimeRunnable);
+                  if (mediaPlayer != null) {
+                      if (mediaPlayer.isPlaying()) mediaPlayer.stop();
+                      mediaPlayer.release();
+                      mediaPlayer = null;
+                  }
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: |
+          gradle wrapper --gradle-version 8.0
+          ./gradlew assembleDebug
+
+      - name: Upload Compiled APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: KeitaiPlayer-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
