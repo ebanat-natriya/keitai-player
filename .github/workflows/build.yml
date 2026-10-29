@@ -10,13 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
+        uses: android-actions/setup-android@v3
 
       - name: Generate Project Structure & Code
         run: |
@@ -369,7 +369,7 @@ jobs:
           ./gradlew assembleDebug
 
       - name: Upload Compiled APK
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: KeitaiPlayer-APK
           path: app/build/outputs/apk/debug/app-debug.apk
