@@ -1,4 +1,4 @@
-name: Build Keitai APK
+name: Build Keitai APK v2
 
 on:
   workflow_dispatch:
@@ -52,8 +52,8 @@ jobs:
                   applicationId "com.example.keitaiplayer"
                   minSdk 22
                   targetSdk 22
-                  versionCode 1
-                  versionName "1.0"
+                  versionCode 2
+                  versionName "2.0"
               }
           }
           EOF
@@ -63,11 +63,14 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
               <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
               <application
                   android:allowBackup="true"
                   android:label="Keitai Player"
                   android:icon="@android:drawable/ic_media_play"
                   android:theme="@android:style/Theme.Black.NoTitleBar">
+                  
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -78,6 +81,11 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
+
+                  <service
+                      android:name=".MusicService"
+                      android:enabled="true"
+                      android:exported="false" />
               </application>
           </manifest>
           EOF
@@ -89,46 +97,85 @@ jobs:
               android:layout_height="match_parent"
               android:orientation="vertical"
               android:background="#000000">
+
+              <!-- Верхняя панель с обложкой и инфо -->
               <LinearLayout
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
-                  android:orientation="vertical"
-                  android:background="#1A1A1A"
-                  android:padding="8dp">
-                  <TextView
-                      android:id="@+id/tvNowPlaying"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="Остановлено"
-                      android:textColor="#00FF00"
-                      android:textSize="16sp"
-                      android:textStyle="bold"
-                      android:singleLine="true"
-                      android:ellipsize="marquee"
-                      android:marqueeRepeatLimit="marquee_forever"
+                  android:orientation="horizontal"
+                  android:background="#181818"
+                  android:padding="6dp"
+                  android:gravity="center_vertical">
+
+                  <ImageView
+                      android:id="@+id/ivAlbumArt"
+                      android:layout_width="64dp"
+                      android:layout_height="64dp"
+                      android:scaleType="centerCrop"
+                      android:background="#333333"
+                      android:src="@android:drawable/ic_media_play"
                       android:focusable="false" />
-                  <TextView
-                      android:id="@+id/tvTime"
-                      android:layout_width="match_parent"
+
+                  <LinearLayout
+                      android:layout_width="0dp"
                       android:layout_height="wrap_content"
-                      android:text="00:00 / 00:00"
-                      android:textColor="#CCCCCC"
-                      android:textSize="14sp"
-                      android:layout_marginTop="4dp"
-                      android:focusable="false" />
-                  <TextView
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="[1]Пред [5]Пауза [3]След [◀/▶]Перемотка"
-                      android:textColor="#888888"
-                      android:textSize="11sp"
-                      android:layout_marginTop="4dp"
-                      android:focusable="false"/>
+                      android:layout_weight="1"
+                      android:orientation="vertical"
+                      android:layout_marginLeft="8dp">
+
+                      <TextView
+                          android:id="@+id/tvPlaylistName"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Плейлист: Все треки"
+                          android:textColor="#FFAA00"
+                          android:textSize="11sp"
+                          android:singleLine="true"
+                          android:focusable="false" />
+
+                      <TextView
+                          android:id="@+id/tvNowPlaying"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Остановлено"
+                          android:textColor="#00FF00"
+                          android:textSize="14sp"
+                          android:textStyle="bold"
+                          android:singleLine="true"
+                          android:ellipsize="marquee"
+                          android:marqueeRepeatLimit="marquee_forever"
+                          android:focusable="false" />
+
+                      <TextView
+                          android:id="@+id/tvTime"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="00:00 / 00:00"
+                          android:textColor="#CCCCCC"
+                          android:textSize="13sp"
+                          android:layout_marginTop="2dp"
+                          android:focusable="false" />
+                  </LinearLayout>
               </LinearLayout>
+
+              <!-- Подсказка по кнопкам -->
+              <TextView
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:background="#101010"
+                  android:padding="4dp"
+                  android:text="[1/3]Трек [5]Пауза [4]Плейлист [7]★Избр [0]Выход"
+                  android:textColor="#888888"
+                  android:textSize="10sp"
+                  android:gravity="center"
+                  android:focusable="false"/>
+
               <View
                   android:layout_width="match_parent"
                   android:layout_height="1dp"
                   android:background="#333333" />
+
+              <!-- Список треков -->
               <ListView
                   android:id="@+id/listViewTracks"
                   android:layout_width="match_parent"
@@ -145,102 +192,403 @@ jobs:
           </LinearLayout>
           EOF
 
+          cat << 'EOF' > app/src/main/java/com/example/keitaiplayer/Track.java
+          package com.example.keitaiplayer;
+          import java.io.File;
+
+          public class Track {
+              public String title;
+              public String artist;
+              public String path;
+              public String folder;
+
+              public Track(String title, String artist, String path) {
+                  this.title = title != null ? title : "Unknown";
+                  this.artist = artist != null ? artist : "Unknown";
+                  this.path = path;
+                  File f = new File(path);
+                  this.folder = f.getParentFile() != null ? f.getParentFile().getName() : "Music";
+              }
+
+              @Override
+              public String toString() {
+                  return artist + " - " + title;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/keitaiplayer/MusicService.java
+          package com.example.keitaiplayer;
+
+          import android.app.Notification;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.media.AudioManager;
+          import android.media.MediaMetadataRetriever;
+          import android.media.MediaPlayer;
+          import android.os.Binder;
+          import android.os.IBinder;
+          import android.os.PowerManager;
+
+          import java.io.IOException;
+          import java.util.ArrayList;
+
+          public class MusicService extends Service {
+              private final IBinder binder = new MusicBinder();
+              private MediaPlayer mediaPlayer;
+              private PowerManager.WakeLock wakeLock;
+              private ArrayList<Track> playlist = new ArrayList<>();
+              private int currentIndex = -1;
+              private SharedPreferences prefs;
+
+              public interface PlayerCallback {
+                  void onTrackChanged(Track track, Bitmap albumArt, int index);
+                  void onPlayStateChanged(boolean isPlaying);
+              }
+
+              private PlayerCallback callback;
+
+              public class MusicBinder extends Binder {
+                  public MusicService getService() {
+                      return MusicService.this;
+                  }
+              }
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  prefs = getSharedPreferences("KeitaiPlayerPrefs", MODE_PRIVATE);
+
+                  PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                  wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KeitaiPlayer::WakeLock");
+
+                  mediaPlayer = new MediaPlayer();
+                  mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+                  mediaPlayer.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+
+                  mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                      @Override
+                      public void onCompletion(MediaPlayer mp) {
+                          playNext();
+                      }
+                  });
+              }
+
+              public void setCallback(PlayerCallback cb) {
+                  this.callback = cb;
+              }
+
+              public void setPlaylist(ArrayList<Track> list) {
+                  this.playlist = new ArrayList<>(list);
+              }
+
+              public ArrayList<Track> getPlaylist() {
+                  return playlist;
+              }
+
+              public int getCurrentIndex() {
+                  return currentIndex;
+              }
+
+              public Track getCurrentTrack() {
+                  if (currentIndex >= 0 && currentIndex < playlist.size()) {
+                      return playlist.get(currentIndex);
+                  }
+                  return null;
+              }
+
+              public void prepareTrack(int index, int startPosMs, boolean startPlay) {
+                  if (playlist.isEmpty() || index < 0 || index >= playlist.size()) return;
+                  currentIndex = index;
+                  Track track = playlist.get(currentIndex);
+
+                  try {
+                      if (!wakeLock.isHeld()) wakeLock.acquire();
+                      mediaPlayer.reset();
+                      mediaPlayer.setDataSource(track.path);
+                      mediaPlayer.prepare();
+                      if (startPosMs > 0 && startPosMs < mediaPlayer.getDuration()) {
+                          mediaPlayer.seekTo(startPosMs);
+                      }
+                      if (startPlay) {
+                          mediaPlayer.start();
+                          startForegroundServiceWithNotif(track);
+                      }
+                      saveState();
+
+                      if (callback != null) {
+                          callback.onTrackChanged(track, extractAlbumArt(track.path), currentIndex);
+                          callback.onPlayStateChanged(mediaPlayer.isPlaying());
+                      }
+                  } catch (IOException e) {
+                      e.printStackTrace();
+                  }
+              }
+
+              public void playTrack(int index) {
+                  prepareTrack(index, 0, true);
+              }
+
+              public void togglePlayPause() {
+                  if (currentIndex == -1 && !playlist.isEmpty()) {
+                      playTrack(0);
+                      return;
+                  }
+                  if (mediaPlayer.isPlaying()) {
+                      mediaPlayer.pause();
+                      saveState();
+                      stopForeground(false);
+                  } else {
+                      if (!wakeLock.isHeld()) wakeLock.acquire();
+                      mediaPlayer.start();
+                      Track t = getCurrentTrack();
+                      if (t != null) startForegroundServiceWithNotif(t);
+                  }
+                  if (callback != null) {
+                      callback.onPlayStateChanged(mediaPlayer.isPlaying());
+                  }
+              }
+
+              public void playNext() {
+                  if (playlist.isEmpty()) return;
+                  playTrack((currentIndex + 1) % playlist.size());
+              }
+
+              public void playPrevious() {
+                  if (playlist.isEmpty()) return;
+                  int prev = (currentIndex - 1 < 0) ? playlist.size() - 1 : currentIndex - 1;
+                  playTrack(prev);
+              }
+
+              public void seek(int deltaMs) {
+                  if (currentIndex != -1) {
+                      int pos = Math.max(0, Math.min(mediaPlayer.getCurrentPosition() + deltaMs, mediaPlayer.getDuration()));
+                      mediaPlayer.seekTo(pos);
+                      saveState();
+                  }
+              }
+
+              public boolean isPlaying() {
+                  return mediaPlayer != null && mediaPlayer.isPlaying();
+              }
+
+              public int getCurrentPosition() {
+                  return (mediaPlayer != null && currentIndex != -1) ? mediaPlayer.getCurrentPosition() : 0;
+              }
+
+              public int getDuration() {
+                  return (mediaPlayer != null && currentIndex != -1) ? mediaPlayer.getDuration() : 0;
+              }
+
+              public Bitmap extractAlbumArt(String path) {
+                  MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+                  try {
+                      mmr.setDataSource(path);
+                      byte[] data = mmr.getEmbeddedPicture();
+                      if (data != null) {
+                          return BitmapFactory.decodeByteArray(data, 0, data.length);
+                      }
+                  } catch (Exception ignored) {
+                  } finally {
+                      try { mmr.release(); } catch (Exception ignored) {}
+                  }
+                  return null;
+              }
+
+              public void saveState() {
+                  Track t = getCurrentTrack();
+                  if (t != null) {
+                      prefs.edit()
+                              .putString("last_path", t.path)
+                              .putInt("last_pos", getCurrentPosition())
+                              .apply();
+                  }
+              }
+
+              private void startForegroundServiceWithNotif(Track track) {
+                  Intent notificationIntent = new Intent(this, MainActivity.class);
+                  PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, 0);
+
+                  Notification notification = new Notification.Builder(this)
+                          .setContentTitle("Keitai Player")
+                          .setContentText(track.toString())
+                          .setSmallIcon(android.R.drawable.ic_media_play)
+                          .setContentIntent(pendingIntent)
+                          .setOngoing(true)
+                          .build();
+
+                  startForeground(1, notification);
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  return START_STICKY;
+              }
+
+              @Override
+              public void onDestroy() {
+                  saveState();
+                  if (mediaPlayer != null) {
+                      if (mediaPlayer.isPlaying()) mediaPlayer.stop();
+                      mediaPlayer.release();
+                  }
+                  if (wakeLock != null && wakeLock.isHeld()) {
+                      wakeLock.release();
+                  }
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return binder;
+              }
+          }
+          EOF
+
           cat << 'EOF' > app/src/main/java/com/example/keitaiplayer/MainActivity.java
           package com.example.keitaiplayer;
+
           import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.ComponentName;
           import android.content.ContentResolver;
           import android.content.Context;
+          import android.content.DialogInterface;
+          import android.content.Intent;
+          import android.content.ServiceConnection;
+          import android.content.SharedPreferences;
           import android.database.Cursor;
+          import android.graphics.Bitmap;
           import android.media.AudioManager;
-          import android.media.MediaPlayer;
           import android.net.Uri;
           import android.os.Bundle;
           import android.os.Handler;
-          import android.os.PowerManager;
+          import android.os.IBinder;
           import android.provider.MediaStore;
           import android.view.KeyEvent;
           import android.view.View;
           import android.view.ViewGroup;
           import android.widget.AdapterView;
           import android.widget.ArrayAdapter;
+          import android.widget.ImageView;
           import android.widget.ListView;
           import android.widget.TextView;
           import android.widget.Toast;
-          import java.io.IOException;
-          import java.util.ArrayList;
-          import java.util.Locale;
 
-          public class MainActivity extends Activity {
+          import java.util.ArrayList;
+          import java.util.HashSet;
+          import java.util.LinkedHashSet;
+          import java.util.Locale;
+          import java.util.Set;
+
+          public class MainActivity extends Activity implements MusicService.PlayerCallback {
+
               private ListView listView;
-              private TextView tvNowPlaying, tvTime;
-              private MediaPlayer mediaPlayer;
+              private TextView tvNowPlaying, tvTime, tvPlaylistName;
+              private ImageView ivAlbumArt;
+
               private AudioManager audioManager;
-              private ArrayList<Track> trackList = new ArrayList<>();
-              private int currentTrackIndex = -1;
+              private SharedPreferences prefs;
+
+              private ArrayList<Track> allTracks = new ArrayList<>();
+              private ArrayList<Track> displayedTracks = new ArrayList<>();
+              private Set<String> favoritePaths = new HashSet<>();
+              private String currentPlaylistName = "Все треки";
+
+              private MusicService musicService;
+              private boolean isBound = false;
               private Handler handler = new Handler();
 
-              private static class Track {
-                  String title, artist, path;
-                  Track(String title, String artist, String path) {
-                      this.title = title; this.artist = artist; this.path = path;
-                  }
+              private ServiceConnection connection = new ServiceConnection() {
                   @Override
-                  public String toString() { return artist + " - " + title; }
-              }
+                  public void onServiceConnected(ComponentName name, IBinder service) {
+                      MusicService.MusicBinder binder = (MusicService.MusicBinder) service;
+                      musicService = binder.getService();
+                      musicService.setCallback(MainActivity.this);
+                      isBound = true;
+
+                      if (musicService.getCurrentTrack() != null) {
+                          // Сервис уже играет в фоне — синхронизируем экран
+                          Track t = musicService.getCurrentTrack();
+                          onTrackChanged(t, musicService.extractAlbumArt(t.path), musicService.getCurrentIndex());
+                          onPlayStateChanged(musicService.isPlaying());
+                          updateUI();
+                      } else {
+                          // Первый запуск — восстанавливаем последний трек и позицию
+                          musicService.setPlaylist(displayedTracks);
+                          restoreLastTrack();
+                      }
+                  }
+
+                  @Override
+                  public void onServiceDisconnected(ComponentName name) {
+                      isBound = false;
+                  }
+              };
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   setContentView(R.layout.activity_main);
+
                   listView = findViewById(R.id.listViewTracks);
                   tvNowPlaying = findViewById(R.id.tvNowPlaying);
                   tvNowPlaying.setSelected(true);
                   tvTime = findViewById(R.id.tvTime);
+                  tvPlaylistName = findViewById(R.id.tvPlaylistName);
+                  ivAlbumArt = findViewById(R.id.ivAlbumArt);
+
                   audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                  initMediaPlayer();
-                  loadTracks();
+                  prefs = getSharedPreferences("KeitaiPlayerPrefs", MODE_PRIVATE);
+                  favoritePaths = new HashSet<>(prefs.getStringSet("favorites", new HashSet<String>()));
+
+                  loadAllTracks();
+                  displayedTracks.addAll(allTracks);
                   setupListView();
+
+                  Intent serviceIntent = new Intent(this, MusicService.class);
+                  startService(serviceIntent);
+                  bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE);
               }
 
-              private void initMediaPlayer() {
-                  mediaPlayer = new MediaPlayer();
-                  mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
-                  mediaPlayer.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
-                  mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-                      @Override
-                      public void onCompletion(MediaPlayer mp) { playNext(); }
-                  });
-              }
-
-              private void loadTracks() {
-                  ContentResolver contentResolver = getContentResolver();
-                  Uri songUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+              private void loadAllTracks() {
+                  allTracks.clear();
+                  ContentResolver cr = getContentResolver();
+                  Uri uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
                   String selection = MediaStore.Audio.Media.IS_MUSIC + "!= 0";
                   String sortOrder = MediaStore.Audio.Media.TITLE + " ASC";
-                  Cursor songCursor = contentResolver.query(songUri, null, selection, null, sortOrder);
-                  if (songCursor != null && songCursor.moveToFirst()) {
-                      int titleIndex = songCursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
-                      int artistIndex = songCursor.getColumnIndex(MediaStore.Audio.Media.ARTIST);
-                      int pathIndex = songCursor.getColumnIndex(MediaStore.Audio.Media.DATA);
+                  Cursor cursor = cr.query(uri, null, selection, null, sortOrder);
+                  if (cursor != null && cursor.moveToFirst()) {
+                      int titleIdx = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
+                      int artistIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST);
+                      int pathIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DATA);
                       do {
-                          trackList.add(new Track(songCursor.getString(titleIndex), songCursor.getString(artistIndex), songCursor.getString(pathIndex)));
-                      } while (songCursor.moveToNext());
-                      songCursor.close();
+                          allTracks.add(new Track(
+                                  cursor.getString(titleIdx),
+                                  cursor.getString(artistIdx),
+                                  cursor.getString(pathIdx)
+                          ));
+                      } while (cursor.moveToNext());
+                      cursor.close();
                   }
               }
 
               private void setupListView() {
-                  if (trackList.isEmpty()) {
-                      Toast.makeText(this, "Музыка не найдена!", Toast.LENGTH_LONG).show();
-                      return;
-                  }
-                  ArrayAdapter<Track> adapter = new ArrayAdapter<Track>(this, android.R.layout.simple_list_item_1, trackList) {
+                  ArrayAdapter<Track> adapter = new ArrayAdapter<Track>(this, android.R.layout.simple_list_item_1, displayedTracks) {
                       @Override
                       public View getView(int position, View convertView, ViewGroup parent) {
                           View view = super.getView(position, convertView, parent);
                           TextView text = view.findViewById(android.R.id.text1);
+                          Track t = displayedTracks.get(position);
+                          boolean isFav = favoritePaths.contains(t.path);
+                          text.setText((isFav ? "★ " : "") + t.toString());
                           text.setTextColor(0xFFFFFFFF);
-                          text.setTextSize(14);
+                          text.setTextSize(13);
                           text.setSingleLine(true);
                           return view;
                       }
@@ -249,76 +597,166 @@ jobs:
                   listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
                       @Override
                       public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                          if (currentTrackIndex == position) togglePlayPause();
-                          else playTrack(position);
+                          if (!isBound) return;
+                          musicService.setPlaylist(displayedTracks);
+                          Track clicked = displayedTracks.get(position);
+                          Track current = musicService.getCurrentTrack();
+                          if (current != null && current.path.equals(clicked.path)) {
+                              musicService.togglePlayPause();
+                          } else {
+                              musicService.playTrack(position);
+                          }
                       }
                   });
               }
 
-              private void playTrack(int index) {
-                  if (trackList.isEmpty() || index < 0 || index >= trackList.size()) return;
-                  currentTrackIndex = index;
-                  Track track = trackList.get(currentTrackIndex);
-                  try {
-                      mediaPlayer.reset();
-                      mediaPlayer.setDataSource(track.path);
-                      mediaPlayer.prepare();
-                      mediaPlayer.start();
-                      tvNowPlaying.setText("▶ " + track.toString());
-                      listView.setSelection(currentTrackIndex);
-                      updateTimeRunnable.run();
-                  } catch (IOException e) {
-                      Toast.makeText(this, "Ошибка файла", Toast.LENGTH_SHORT).show();
+              private void refreshList() {
+                  ((ArrayAdapter<?>) listView.getAdapter()).notifyDataSetChanged();
+              }
+
+              private void restoreLastTrack() {
+                  String lastPath = prefs.getString("last_path", null);
+                  int lastPos = prefs.getInt("last_pos", 0);
+                  if (lastPath != null) {
+                      for (int i = 0; i < displayedTracks.size(); i++) {
+                          if (displayedTracks.get(i).path.equals(lastPath)) {
+                              musicService.prepareTrack(i, lastPos, false);
+                              listView.setSelection(i);
+                              updateUI();
+                              break;
+                          }
+                      }
                   }
               }
 
-              private void togglePlayPause() {
-                  if (currentTrackIndex == -1 && !trackList.isEmpty()) { playTrack(0); return; }
-                  if (mediaPlayer.isPlaying()) {
-                      mediaPlayer.pause();
-                      tvNowPlaying.setText("⏸ " + trackList.get(currentTrackIndex).toString());
+              private void toggleFavoriteForSelected() {
+                  int pos = listView.getSelectedItemPosition();
+                  if (pos == AdapterView.INVALID_POSITION || pos >= displayedTracks.size()) return;
+                  Track t = displayedTracks.get(pos);
+                  if (favoritePaths.contains(t.path)) {
+                      favoritePaths.remove(t.path);
+                      Toast.makeText(this, "Удалено из Избранного", Toast.LENGTH_SHORT).show();
                   } else {
-                      mediaPlayer.start();
-                      tvNowPlaying.setText("▶ " + trackList.get(currentTrackIndex).toString());
-                      updateTimeRunnable.run();
+                      favoritePaths.add(t.path);
+                      Toast.makeText(this, "Добавлено в Избранное ★", Toast.LENGTH_SHORT).show();
                   }
+                  prefs.edit().putStringSet("favorites", new HashSet<>(favoritePaths)).apply();
+                  refreshList();
               }
 
-              private void playNext() {
-                  if (trackList.isEmpty()) return;
-                  playTrack((currentTrackIndex + 1) % trackList.size());
+              private void showPlaylistDialog() {
+                  final ArrayList<String> options = new ArrayList<>();
+                  options.add("Все треки (" + allTracks.size() + ")");
+                  options.add("★ Избранное (" + favoritePaths.size() + ")");
+
+                  Set<String> folders = new LinkedHashSet<>();
+                  for (Track t : allTracks) folders.add(t.folder);
+                  for (String f : folders) options.add("Папка: " + f);
+
+                  AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                  builder.setTitle("Выберите плейлист");
+                  builder.setItems(options.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                      @Override
+                      public void onClick(DialogInterface dialog, int which) {
+                          displayedTracks.clear();
+                          if (which == 0) {
+                              currentPlaylistName = "Все треки";
+                              displayedTracks.addAll(allTracks);
+                          } else if (which == 1) {
+                              currentPlaylistName = "★ Избранное";
+                              for (Track t : allTracks) {
+                                  if (favoritePaths.contains(t.path)) displayedTracks.add(t);
+                              }
+                          } else {
+                              String folderName = options.get(which).replace("Папка: ", "");
+                              currentPlaylistName = "Папка: " + folderName;
+                              for (Track t : allTracks) {
+                                  if (t.folder.equals(folderName)) displayedTracks.add(t);
+                              }
+                          }
+                          tvPlaylistName.setText("Плейлист: " + currentPlaylistName);
+                          refreshList();
+                          if (isBound) musicService.setPlaylist(displayedTracks);
+                      }
+                  });
+                  builder.show();
               }
 
-              private void playPrevious() {
-                  if (trackList.isEmpty()) return;
-                  playTrack((currentTrackIndex - 1 < 0) ? trackList.size() - 1 : currentTrackIndex - 1);
+              @Override
+              public void onTrackChanged(Track track, Bitmap albumArt, int index) {
+                  tvNowPlaying.setText("▶ " + track.toString());
+                  if (albumArt != null) {
+                      ivAlbumArt.setImageBitmap(albumArt);
+                  } else {
+                      ivAlbumArt.setImageResource(android.R.drawable.ic_media_play);
+                  }
+                  for (int i = 0; i < displayedTracks.size(); i++) {
+                      if (displayedTracks.get(i).path.equals(track.path)) {
+                          listView.setSelection(i);
+                          break;
+                      }
+                  }
+                  updateUI();
               }
 
-              private void seek(int milliseconds) {
-                  if (mediaPlayer.isPlaying() || currentTrackIndex != -1) {
-                      int newPos = Math.max(0, Math.min(mediaPlayer.getCurrentPosition() + milliseconds, mediaPlayer.getDuration()));
-                      mediaPlayer.seekTo(newPos);
-                      updateUI();
+              @Override
+              public void onPlayStateChanged(boolean isPlaying) {
+                  Track t = isBound ? musicService.getCurrentTrack() : null;
+                  if (t != null) {
+                      tvNowPlaying.setText((isPlaying ? "▶ " : "⏸ ") + t.toString());
+                  }
+                  if (isPlaying) {
+                      updateTimeRunnable.run();
+                  } else {
+                      handler.removeCallbacks(updateTimeRunnable);
                   }
               }
 
               @Override
               public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  if (!isBound) return super.onKeyDown(keyCode, event);
+
                   switch (keyCode) {
-                      case KeyEvent.KEYCODE_DPAD_LEFT: seek(-10000); return true;
-                      case KeyEvent.KEYCODE_DPAD_RIGHT: seek(10000); return true;
-                      case KeyEvent.KEYCODE_1: playPrevious(); return true;
-                      case KeyEvent.KEYCODE_3: playNext(); return true;
-                      case KeyEvent.KEYCODE_5: togglePlayPause(); return true;
+                      case KeyEvent.KEYCODE_DPAD_LEFT:
+                          musicService.seek(-10000);
+                          updateUI();
+                          return true;
+                      case KeyEvent.KEYCODE_DPAD_RIGHT:
+                          musicService.seek(10000);
+                          updateUI();
+                          return true;
+                      case KeyEvent.KEYCODE_1:
+                          musicService.playPrevious();
+                          return true;
+                      case KeyEvent.KEYCODE_3:
+                          musicService.playNext();
+                          return true;
+                      case KeyEvent.KEYCODE_5:
+                          musicService.togglePlayPause();
+                          return true;
+                      case KeyEvent.KEYCODE_4:
+                          showPlaylistDialog();
+                          return true;
+                      case KeyEvent.KEYCODE_7:
+                          toggleFavoriteForSelected();
+                          return true;
                       case KeyEvent.KEYCODE_2:
                           audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
                           return true;
                       case KeyEvent.KEYCODE_8:
                           audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
                           return true;
+                      case KeyEvent.KEYCODE_0:
+                          // Полный выход и выключение фонового сервиса
+                          musicService.saveState();
+                          stopService(new Intent(this, MusicService.class));
+                          finish();
+                          return true;
                       case KeyEvent.KEYCODE_BACK:
-                          if (mediaPlayer != null && mediaPlayer.isPlaying()) { moveTaskToBack(true); return true; }
-                          break;
+                          // Сворачиваем, чтобы музыка продолжала играть при закрытии крышки
+                          musicService.saveState();
+                          moveTaskToBack(true);
+                          return true;
                   }
                   return super.onKeyDown(keyCode, event);
               }
@@ -326,7 +764,7 @@ jobs:
               private Runnable updateTimeRunnable = new Runnable() {
                   @Override
                   public void run() {
-                      if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                      if (isBound && musicService.isPlaying()) {
                           updateUI();
                           handler.postDelayed(this, 1000);
                       }
@@ -334,7 +772,10 @@ jobs:
               };
 
               private void updateUI() {
-                  tvTime.setText(formatTime(mediaPlayer.getCurrentPosition()) + " / " + formatTime(mediaPlayer.getDuration()));
+                  if (!isBound) return;
+                  int cur = musicService.getCurrentPosition();
+                  int tot = musicService.getDuration();
+                  tvTime.setText(formatTime(cur) + " / " + formatTime(tot));
               }
 
               private String formatTime(int millis) {
@@ -342,14 +783,20 @@ jobs:
               }
 
               @Override
+              protected void onPause() {
+                  super.onPause();
+                  if (isBound) musicService.saveState();
+              }
+
+              @Override
               protected void onDestroy() {
-                  super.onDestroy();
                   handler.removeCallbacks(updateTimeRunnable);
-                  if (mediaPlayer != null) {
-                      if (mediaPlayer.isPlaying()) mediaPlayer.stop();
-                      mediaPlayer.release();
-                      mediaPlayer = null;
+                  if (isBound) {
+                      musicService.setCallback(null);
+                      unbindService(connection);
+                      isBound = false;
                   }
+                  super.onDestroy();
               }
           }
           EOF
@@ -364,5 +811,5 @@ jobs:
       - name: Upload Compiled APK
         uses: actions/upload-artifact@v4
         with:
-          name: KeitaiPlayer-APK
+          name: KeitaiPlayer-v2-APK
           path: app/build/outputs/apk/debug/app-debug.apk
